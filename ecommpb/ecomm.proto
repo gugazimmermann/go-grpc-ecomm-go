@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package ecomm;
+
+option go_package = "ecommpb/ecommpb";
+
+import "google/protobuf/timestamp.proto";
+
+message Category {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  repeated Category ancestors = 4;
+  repeated Category childrens = 5;
+  google.protobuf.Timestamp last_updated = 6;
+}
+
+message Product {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string image = 4;
+  int32 quantity = 5;
+  float value = 6;
+  Category category = 7;
+  google.protobuf.Timestamp last_updated = 8;
+}
+
+service EcommService {}
