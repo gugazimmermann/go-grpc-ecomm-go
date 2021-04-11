@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	. "github.com/gugazimmermann/go-grpc-ecomm-go/ecommpb/ecommpb"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	. "go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -31,6 +33,27 @@ type MongoCategories struct {
 	Subcategories []*MongoCategories     `bson:"subcategories,omitempty"`
 	Parents       []*MongoCategories     `bson:"parents,omitempty"`
 	LastUpdated   *timestamppb.Timestamp `bson:"last_updated,omitempty"`
+}
+
+type MongoProducts struct {
+	Metadata []MongoProductsMetadata `bson:"metadata,omitempty"`
+	Data     []MongoProductsData     `bson:"data,omitempty"`
+}
+
+type MongoProductsMetadata struct {
+	Total int32 `bson:"total,omitempty"`
+}
+
+type MongoProductsData struct {
+	ID          ObjectID               `bson:"_id,omitempty"`
+	Name        string                 `bson:"name,omitempty"`
+	Slug        string                 `bson:"slug,omitempty"`
+	Image       string                 `bson:"image,omitempty"`
+	Quantity    int32                  `bson:"quantity,omitempty"`
+	Value       float64                `bson:"value,omitempty"`
+	Category    ObjectID               `bson:"category,omitempty"`
+	Cat         []MongoCategories      `bson:"cat,omitempty"`
+	LastUpdated *timestamppb.Timestamp `bson:"lastupdated,omitempty"`
 }
 
 var products, categories *mongo.Collection
@@ -262,4 +285,214 @@ func (*server) CategoriesSideMenu(ctx context.Context, req *CategoryRequest) (*C
 	return &CategoriesMenuResponse{
 		Categories: res,
 	}, nil
+}
+
+func dataToProd(p MongoProductsData) *Product {
+	return &Product{
+		Id:       p.ID.Hex(),
+		Name:     p.Name,
+		Slug:     p.Slug,
+		Image:    p.Image,
+		Quantity: p.Quantity,
+		Value:    float32(math.Ceil(p.Value*100) / 100),
+		Category: &Category{
+			Id:   p.Cat[0].ID.Hex(),
+			Name: p.Cat[0].Name,
+			Slug: p.Cat[0].Slug,
+		},
+		LastUpdated: p.LastUpdated,
+	}
+}
+
+func (*server) Products(ctx context.Context, req *ProductRequest) (*ProductsResponse, error) {
+	start := req.GetStart()
+	qty := req.GetQty()
+	log.Printf("Products called with start: %v | qty: %v\n", start, qty)
+	sortStage := bson.D{E{Key: "$sort", Value: bson.D{E{Key: "name", Value: 1}}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$category"},
+			E{Key: "connectFromField", Value: "category"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "maxDepth", Value: 0},
+			E{Key: "as", Value: "cat"},
+		}}}
+	facetStage := bson.D{
+		E{Key: "$facet", Value: bson.D{
+			E{Key: "metadata", Value: []bson.D{{E{Key: "$count", Value: "total"}}}},
+			E{Key: "data", Value: []bson.D{{E{Key: "$skip", Value: start}}, {E{Key: "$limit", Value: qty}}}},
+		}},
+	}
+	cur, err := products.Aggregate(context.Background(), mongo.Pipeline{sortStage, graphLookupStage, facetStage})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	d := &MongoProducts{}
+	defer cur.Close(context.Background())
+	for cur.Next(context.Background()) {
+		if err := cur.Decode(d); err != nil {
+			return nil, status.Errorf(codes.Internal, fmt.Sprintf("Cannot decoding data: %v", err))
+		}
+	}
+	if err = cur.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	data := []*Product{}
+	for _, p := range d.Data {
+		data = append(data, dataToProd(p))
+	}
+	return &ProductsResponse{
+		Total: d.Metadata[0].Total,
+		Data:  data,
+	}, nil
+}
+
+func seeProductCategories(oid ObjectID) []ObjectID {
+	matchStage := bson.D{E{Key: "$match", Value: bson.D{
+		E{Key: "_id", Value: oid},
+	}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$childrens"},
+			E{Key: "connectFromField", Value: "childrens"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "as", Value: "subcategories"},
+		}}}
+	cur, err := categories.Aggregate(context.Background(), mongo.Pipeline{matchStage, graphLookupStage})
+	if err != nil {
+		fmt.Printf("Unknown Internal Error: %v", err)
+	}
+	defer cur.Close(context.Background())
+	ds := []*MongoCategories{}
+	for cur.Next(context.Background()) {
+		d := &MongoCategories{}
+		if err := cur.Decode(d); err != nil {
+			fmt.Printf("Cannot decoding data: %v", err)
+		}
+		ds = append(ds, d)
+	}
+	if err = cur.Err(); err != nil {
+		fmt.Printf("Unknown Internal Error: %v", err)
+	}
+
+	cats := []ObjectID{}
+	if len(ds[0].Subcategories) > 0 {
+		for _, cat := range ds[0].Subcategories {
+			cats = append(cats, cat.ID)
+		}
+	}
+	return cats
+}
+
+func (*server) ProductsFromCategory(ctx context.Context, req *ProductFromCategoryRequest) (*ProductsResponse, error) {
+	categoryID := req.GetCategoryId()
+	start := req.GetStart()
+	qty := req.GetQty()
+	log.Printf("ProductsFromCategory called with Category ID: %v | start: %v | qty: %v\n", categoryID, start, qty)
+	oid, err := primitive.ObjectIDFromHex(categoryID)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "Cannot parse ID")
+	}
+	cats := seeProductCategories(oid)
+	search := bson.D{}
+	if len(cats) > 0 {
+		arr := []bson.D{}
+		for _, i := range cats {
+			arr = append(arr, bson.D{E{Key: "category", Value: i}})
+		}
+		search = bson.D{E{Key: "$or", Value: arr}}
+	} else {
+		search = bson.D{E{Key: "category", Value: oid}}
+	}
+	matchStage := bson.D{E{Key: "$match", Value: search}}
+	sortStage := bson.D{E{Key: "$sort", Value: bson.D{E{Key: "name", Value: 1}}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$category"},
+			E{Key: "connectFromField", Value: "category"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "maxDepth", Value: 0},
+			E{Key: "as", Value: "cat"},
+		}}}
+	facetStage := bson.D{
+		E{Key: "$facet", Value: bson.D{
+			E{Key: "metadata", Value: []bson.D{{E{Key: "$count", Value: "total"}}}},
+			E{Key: "data", Value: []bson.D{{E{Key: "$skip", Value: start}}, {E{Key: "$limit", Value: qty}}}},
+		}},
+	}
+	cur, err := products.Aggregate(context.Background(), mongo.Pipeline{matchStage, sortStage, graphLookupStage, facetStage})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	d := &MongoProducts{}
+	defer cur.Close(context.Background())
+	for cur.Next(context.Background()) {
+		if err := cur.Decode(d); err != nil {
+			return nil, status.Errorf(codes.Internal, fmt.Sprintf("Cannot decoding data: %v", err))
+		}
+	}
+	if err = cur.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	data := []*Product{}
+	if len(d.Data) > 0 {
+		for _, p := range d.Data {
+			data = append(data, dataToProd(p))
+		}
+		return &ProductsResponse{Total: d.Metadata[0].Total, Data: data}, nil
+	} else {
+		return &ProductsResponse{Total: 0, Data: data}, nil
+	}
+}
+
+func (*server) SearchProducts(ctx context.Context, req *SearchProductsRequest) (*ProductsResponse, error) {
+	name := req.GetName()
+	start := req.GetStart()
+	qty := req.GetQty()
+	log.Printf("SearchProducts called with Name: %v | start: %v | qty: %v\n", name, start, qty)
+	matchStage := bson.D{E{Key: "$match", Value: bson.D{
+		E{Key: "name", Value: Regex{Pattern: name, Options: "i"}},
+	}}}
+	sortStage := bson.D{E{Key: "$sort", Value: bson.D{E{Key: "name", Value: 1}}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$category"},
+			E{Key: "connectFromField", Value: "category"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "maxDepth", Value: 0},
+			E{Key: "as", Value: "cat"},
+		}}}
+	facetStage := bson.D{
+		E{Key: "$facet", Value: bson.D{
+			E{Key: "metadata", Value: []bson.D{{E{Key: "$count", Value: "total"}}}},
+			E{Key: "data", Value: []bson.D{{E{Key: "$skip", Value: start}}, {E{Key: "$limit", Value: qty}}}},
+		}},
+	}
+	cur, err := products.Aggregate(context.Background(), mongo.Pipeline{matchStage, graphLookupStage, sortStage, facetStage})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	d := &MongoProducts{}
+	defer cur.Close(context.Background())
+	for cur.Next(context.Background()) {
+		if err := cur.Decode(d); err != nil {
+			return nil, status.Errorf(codes.Internal, fmt.Sprintf("Cannot decoding data: %v", err))
+		}
+	}
+	if err = cur.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	data := []*Product{}
+	if len(d.Data) > 0 {
+		for _, p := range d.Data {
+			data = append(data, dataToProd(p))
+		}
+		return &ProductsResponse{Total: d.Metadata[0].Total, Data: data}, nil
+	} else {
+		return &ProductsResponse{Total: 0, Data: data}, nil
+	}
 }

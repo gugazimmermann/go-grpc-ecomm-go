@@ -30,8 +30,30 @@ message Product {
 message CategoryRequest { string slug = 1; }
 message CategoriesMenuResponse { repeated Category categories = 1; }
 
+message ProductRequest {
+  int32 start = 2;
+  int32 qty = 3;
+}
+message ProductFromCategoryRequest {
+  string categoryId = 1;
+  int32 start = 2;
+  int32 qty = 3;
+}
+message SearchProductsRequest {
+  string name = 1;
+  int32 start = 2;
+  int32 qty = 3;
+}
+message ProductsResponse {
+  int32 total = 1;
+  repeated Product data = 2;
+}
+
 service EcommService {
   rpc CategoriesMenu(google.protobuf.Empty) returns (CategoriesMenuResponse) {};
   rpc CategoryBreadcrumb(CategoryRequest) returns (CategoriesMenuResponse) {};
   rpc CategoriesSideMenu(CategoryRequest) returns (CategoriesMenuResponse) {};
+  rpc Products(ProductRequest) returns (ProductsResponse) {};
+  rpc ProductsFromCategory(ProductFromCategoryRequest) returns (ProductsResponse) {};
+  rpc SearchProducts(SearchProductsRequest) returns (ProductsResponse) {};
 }

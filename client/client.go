@@ -18,9 +18,9 @@ func main() {
 	}
 	defer cc.Close()
 	cl := NewEcommServiceClient(cc)
-	categoriesMenu(cl)
-	CategoryBreadcrumb(cl)
-	CategoriesSideMenu(cl)
+	Products(cl)
+	ProductsFromCategory(cl)
+	SearchProducts(cl)
 }
 
 func categoriesMenu(cl EcommServiceClient) {
@@ -52,4 +52,43 @@ func CategoriesSideMenu(cl EcommServiceClient) {
 		fmt.Printf("Error while reading the categories sidemenu: %v\n", err)
 	}
 	fmt.Printf("Categories: %v\n", res)
+}
+
+func Products(cl EcommServiceClient) {
+	fmt.Println("Reading Products")
+	res, err := cl.Products(context.Background(), &ProductRequest{Start: 5, Qty: 10})
+	if err != nil {
+		fmt.Printf("Error while reading the products: %v\n", err)
+	}
+	fmt.Printf("Products: %v\n", res)
+}
+
+func ProductsFromCategory(cl EcommServiceClient) {
+	// Use a valid category ID
+	id := "60726541f45141e71d1eb589"
+	fmt.Printf("Reading CategoryBreadcrumb with ID: %v\n", id)
+	res, err := cl.ProductsFromCategory(context.Background(), &ProductFromCategoryRequest{
+		CategoryId: id,
+		Start:      2,
+		Qty:        3,
+	})
+	if err != nil {
+		fmt.Printf("Error while reading the products from category: %v\n", err)
+	}
+	fmt.Printf("Products: %v\n", res)
+}
+
+func SearchProducts(cl EcommServiceClient) {
+	// Use part of a product name
+	name := "drag"
+	fmt.Printf("Reading SearchProducts with Name: %v\n", name)
+	res, err := cl.SearchProducts(context.Background(), &SearchProductsRequest{
+		Name:  name,
+		Start: 0,
+		Qty:   20,
+	})
+	if err != nil {
+		fmt.Printf("Error while reading the search products: %v\n", err)
+	}
+	fmt.Printf("Products: %v\n", res)
 }
