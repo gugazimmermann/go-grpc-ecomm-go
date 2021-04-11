@@ -2,78 +2,38 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"math"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"time"
 
-	"github.com/gosimple/slug"
-	"github.com/gugazimmermann/go-grpc-ecomm-go/ecommpb/ecommpb"
+	. "github.com/gugazimmermann/go-grpc-ecomm-go/ecommpb/ecommpb"
 	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/bson"
+	. "go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type server struct{}
 
-type SampleData struct {
-	Categories []SampleCategory
-	Products   []SampleProduct
-}
-
-type SampleCategory struct {
-	Id     int    `json:"id"`
-	Name   string `json:"name"`
-	Parent int    `json:"parent"`
-}
-
-type SampleProduct struct {
-	Id       int     `json:"id"`
-	Name     string  `json:"name"`
-	Quantity int     `json:"quantity"`
-	Value    float64 `json:"value"`
-	Category int     `json:"category"`
-	Parent   *SampleProduct
-}
-
-type FlatCategory struct {
-	Name      string
-	Slug      string
-	Parent    string
-	Ancestors []string
-	Childrens []string
-}
-
-type MongoCategory struct {
-	ID          primitive.ObjectID     `bson:"_id,omitempty"`
-	Name        string                 `bson:"name,omitempty"`
-	Slug        string                 `bson:"slug,omitempty"`
-	Ancestors   []primitive.ObjectID   `bson:"ancestors,omitempty"`
-	Childrens   []primitive.ObjectID   `bson:"childrens,omitempty"`
-	LastUpdated *timestamppb.Timestamp `bson:"last_updated,omitempty"`
-}
-
-type FlatProduct struct {
-	Name        string
-	Slug        string
-	Image       string
-	Quantity    int
-	Value       float64
-	Category    primitive.ObjectID
-	LastUpdated *timestamppb.Timestamp
+type MongoCategories struct {
+	ID            ObjectID               `bson:"_id,omitempty"`
+	Name          string                 `bson:"name,omitempty"`
+	Slug          string                 `bson:"slug,omitempty"`
+	Subcategories []*MongoCategories     `bson:"subcategories,omitempty"`
+	Parents       []*MongoCategories     `bson:"parents,omitempty"`
+	LastUpdated   *timestamppb.Timestamp `bson:"last_updated,omitempty"`
 }
 
 var products, categories *mongo.Collection
-var mongoCtx context.Context
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -99,8 +59,6 @@ func main() {
 	products = client.Database(mongoDb).Collection("products")
 	categories = client.Database(mongoDb).Collection("categories")
 
-	sampleDataHandler()
-
 	fmt.Println("Starting Listener...")
 	l, err := net.Listen("tcp", "0.0.0.0:50051")
 	if err != nil {
@@ -108,7 +66,7 @@ func main() {
 	}
 	opts := []grpc.ServerOption{}
 	s := grpc.NewServer(opts...)
-	ecommpb.RegisterEcommServiceServer(s, &server{})
+	RegisterEcommServiceServer(s, &server{})
 
 	go func() {
 		fmt.Println("Ecomm Server Started...")
@@ -130,192 +88,178 @@ func main() {
 	fmt.Println("All done!")
 }
 
-func sampleDataHandler() {
-	sd := getSampleData()
-	cs := getFlatCategories(sd.Categories)
-	mcs := handleCategories(cs)
-	ps := getFlatProducts(sd, mcs)
-	for _, p := range ps {
-		insertProduct(p)
-	}
-}
-
-func getSampleData() *SampleData {
-	f, err := ioutil.ReadFile("./utils/sample-data.json")
+func (*server) CategoriesMenu(ctx context.Context, req *emptypb.Empty) (*CategoriesMenuResponse, error) {
+	log.Println("CategoriesMenu called")
+	matchStage := bson.D{E{Key: "$match", Value: bson.D{
+		E{Key: "ancestors", Value: nil},
+	}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$childrens"},
+			E{Key: "connectFromField", Value: "childrens"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "maxDepth", Value: 0},
+			E{Key: "as", Value: "subcategories"},
+		}}}
+	cur, err := categories.Aggregate(context.Background(), mongo.Pipeline{matchStage, graphLookupStage})
 	if err != nil {
-		fmt.Print(err)
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
 	}
-	sd := &SampleData{}
-	_ = json.Unmarshal(f, sd)
-	return sd
-}
-
-func getFlatCategories(s []SampleCategory) []*FlatCategory {
-	cs := []*FlatCategory{}
-	for _, c := range s {
-		fc := &FlatCategory{
-			Name: c.Name,
-			Slug: slug.Make(c.Name),
+	defer cur.Close(context.Background())
+	ds := []*MongoCategories{}
+	for cur.Next(context.Background()) {
+		d := &MongoCategories{}
+		if err := cur.Decode(d); err != nil {
+			return nil, status.Errorf(codes.Internal, fmt.Sprintf("Cannot decoding data: %v", err))
 		}
-		for _, s := range s {
-			if s.Id == c.Parent {
-				fc.Parent = s.Name
-			}
-		}
-		cs = append(cs, fc)
+		ds = append(ds, d)
 	}
-	return cs
-}
+	if err = cur.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
 
-func handleCategories(cs []*FlatCategory) []*MongoCategory {
-	mcs := []*MongoCategory{}
-	for _, c := range cs {
-		findChildrens(c, cs)
-		findParent(c, cs)
-		findAncestors(c, cs)
-		id := insertCategory(c)
-		mcs = append(mcs, &MongoCategory{
-			ID:          id,
-			Name:        c.Name,
-			Slug:        c.Slug,
-			LastUpdated: timestamppb.Now(),
-		})
-	}
-	for _, mc := range mcs {
-		for _, c := range cs {
-			if c.Name == mc.Name {
-				if len(c.Ancestors) != 0 {
-					as := []primitive.ObjectID{}
-					for _, ca := range c.Ancestors {
-						a := findMongoCat(ca, mcs)
-						as = append(as, a.ID)
-					}
-					mc.Ancestors = as
+	res := []*Category{}
+	for _, d := range ds {
+		ccs := []*Category{}
+		if len(d.Subcategories) > 0 {
+			for _, cc := range d.Subcategories {
+				ec := &Category{
+					Id:   cc.ID.Hex(),
+					Name: cc.Name,
+					Slug: cc.Slug,
 				}
-				if len(c.Childrens) != 0 {
-					chs := []primitive.ObjectID{}
-					for _, cc := range c.Childrens {
-						c := findMongoCat(cc, mcs)
-						chs = append(chs, c.ID)
-					}
-					mc.Childrens = chs
+				ccs = append(ccs, ec)
+			}
+		}
+		r := &Category{
+			Id:          d.ID.Hex(),
+			Name:        d.Name,
+			Slug:        d.Slug,
+			Childrens:   ccs,
+			LastUpdated: d.LastUpdated,
+		}
+		res = append(res, r)
+	}
+	return &CategoriesMenuResponse{
+		Categories: res,
+	}, nil
+}
+
+func (*server) CategoryBreadcrumb(ctx context.Context, req *CategoryRequest) (*CategoriesMenuResponse, error) {
+	s := req.GetSlug()
+	log.Printf("CategoryBreadcrumb called with slug: %v\n", s)
+	matchStage := bson.D{E{Key: "$match", Value: bson.D{
+		E{Key: "slug", Value: s},
+	}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$ancestors"},
+			E{Key: "connectFromField", Value: "ancestors"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "maxDepth", Value: 0},
+			E{Key: "as", Value: "parents"},
+		}}}
+	cur, err := categories.Aggregate(context.Background(), mongo.Pipeline{matchStage, graphLookupStage})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+	defer cur.Close(context.Background())
+	ds := []*MongoCategories{}
+	for cur.Next(context.Background()) {
+		d := &MongoCategories{}
+		if err := cur.Decode(d); err != nil {
+			return nil, status.Errorf(codes.Internal, fmt.Sprintf("Cannot decoding data: %v", err))
+		}
+		ds = append(ds, d)
+	}
+	if err = cur.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
+	}
+
+	res := []*Category{}
+	for _, d := range ds {
+		cps := []*Category{}
+		if len(d.Parents) > 0 {
+			for _, cp := range d.Parents {
+				ec := &Category{
+					Id:   cp.ID.Hex(),
+					Name: cp.Name,
+					Slug: cp.Slug,
 				}
+				cps = append(cps, ec)
 			}
 		}
-		updateCategory(mc)
-	}
-	return mcs
-}
-
-func findChildrens(c *FlatCategory, cs []*FlatCategory) {
-	chs := []string{}
-	for _, ch := range cs {
-		if ch.Parent == c.Name {
-			chs = append(chs, ch.Name)
-			findChildrens(ch, cs)
+		r := &Category{
+			Id:          d.ID.Hex(),
+			Name:        d.Name,
+			Slug:        d.Slug,
+			Ancestors:   cps,
+			LastUpdated: d.LastUpdated,
 		}
+		res = append(res, r)
 	}
-	c.Childrens = chs
+	return &CategoriesMenuResponse{
+		Categories: res,
+	}, nil
 }
 
-func findParent(c *FlatCategory, cs []*FlatCategory) {
-	for _, ch := range c.Childrens {
-		for _, p := range cs {
-			if ch == p.Name {
-				p.Parent = c.Name
-			}
-		}
-	}
-}
-
-func findAncestors(c *FlatCategory, cs []*FlatCategory) {
-	a := []string{}
-	if c.Parent != "" {
-		a = append(a, c.Parent)
-	}
-	for _, ch := range c.Childrens {
-		for _, ca := range cs {
-			if ch == ca.Name {
-				a = append(a, ca.Parent)
-				ca.Ancestors = dedupeString(a)
-			}
-		}
-	}
-}
-
-func dedupeString(e []string) []string {
-	m := map[string]bool{}
-	r := []string{}
-	for v := range e {
-		if m[e[v]] == false {
-			m[e[v]] = true
-			r = append(r, e[v])
-		}
-	}
-	return r
-}
-
-func insertCategory(c *FlatCategory) primitive.ObjectID {
-	r, err := categories.InsertOne(mongoCtx, c)
+func (*server) CategoriesSideMenu(ctx context.Context, req *CategoryRequest) (*CategoriesMenuResponse, error) {
+	s := req.GetSlug()
+	log.Printf("CategoriesSideMenu called with slug: %v\n", s)
+	matchStage := bson.D{E{Key: "$match", Value: bson.D{
+		E{Key: "slug", Value: s},
+	}}}
+	graphLookupStage := bson.D{
+		E{Key: "$graphLookup", Value: bson.D{
+			E{Key: "from", Value: "categories"},
+			E{Key: "startWith", Value: "$childrens"},
+			E{Key: "connectFromField", Value: "childrens"},
+			E{Key: "connectToField", Value: "_id"},
+			E{Key: "maxDepth", Value: 0},
+			E{Key: "as", Value: "subcategories"},
+		}}}
+	cur, err := categories.Aggregate(context.Background(), mongo.Pipeline{matchStage, graphLookupStage})
 	if err != nil {
-		fmt.Println("InsertOne ERROR:", err)
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
 	}
-	return r.InsertedID.(primitive.ObjectID)
-}
-
-func findMongoCat(n string, mcs []*MongoCategory) *MongoCategory {
-	mc := &MongoCategory{}
-	for _, m := range mcs {
-		if m.Name == n {
-			mc = m
+	defer cur.Close(context.Background())
+	ds := []*MongoCategories{}
+	for cur.Next(context.Background()) {
+		d := &MongoCategories{}
+		if err := cur.Decode(d); err != nil {
+			return nil, status.Errorf(codes.Internal, fmt.Sprintf("Cannot decoding data: %v", err))
 		}
+		ds = append(ds, d)
 	}
-	return mc
-}
-
-func updateCategory(c *MongoCategory) {
-	_, err := categories.ReplaceOne(mongoCtx, primitive.M{"_id": c.ID}, MongoCategory{
-		Name:        c.Name,
-		Slug:        c.Slug,
-		Ancestors:   c.Ancestors,
-		Childrens:   c.Childrens,
-		LastUpdated: c.LastUpdated,
-	})
-	if err != nil {
-		fmt.Printf("Cannot update person: %v", err)
+	if err = cur.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("Unknown Internal Error: %v", err))
 	}
-}
 
-func getFlatProducts(s *SampleData, m []*MongoCategory) []*FlatProduct {
-	ps := []*FlatProduct{}
-	for _, p := range s.Products {
-		fp := &FlatProduct{
-			Name:     p.Name,
-			Slug:     slug.Make(p.Name),
-			Image:    strconv.Itoa(p.Id) + ".jpg",
-			Quantity: p.Quantity,
-			Value:    math.Ceil(p.Value*100) / 100,
-		}
-		var pc string
-		for _, sc := range s.Categories {
-			if sc.Id == p.Category {
-				pc = sc.Name
+	res := []*Category{}
+	for _, d := range ds {
+		ccs := []*Category{}
+		if len(d.Subcategories) > 0 {
+			for _, cc := range d.Subcategories {
+				ec := &Category{
+					Id:   cc.ID.Hex(),
+					Name: cc.Name,
+					Slug: cc.Slug,
+				}
+				ccs = append(ccs, ec)
 			}
 		}
-		for _, c := range m {
-			if c.Name == pc {
-				fp.Category = c.ID
-			}
+		r := &Category{
+			Id:          d.ID.Hex(),
+			Name:        d.Name,
+			Slug:        d.Slug,
+			Childrens:   ccs,
+			LastUpdated: d.LastUpdated,
 		}
-		ps = append(ps, fp)
+		res = append(res, r)
 	}
-	return ps
-}
-
-func insertProduct(p *FlatProduct) {
-	p.LastUpdated = timestamppb.Now()
-	_, err := products.InsertOne(mongoCtx, p)
-	if err != nil {
-		fmt.Println("InsertOne ERROR:", err)
-	}
+	return &CategoriesMenuResponse{
+		Categories: res,
+	}, nil
 }

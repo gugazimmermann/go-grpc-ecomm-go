@@ -5,6 +5,7 @@ package ecomm;
 option go_package = "ecommpb/ecommpb";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
 
 message Category {
   string id = 1;
@@ -26,4 +27,11 @@ message Product {
   google.protobuf.Timestamp last_updated = 8;
 }
 
-service EcommService {}
+message CategoryRequest { string slug = 1; }
+message CategoriesMenuResponse { repeated Category categories = 1; }
+
+service EcommService {
+  rpc CategoriesMenu(google.protobuf.Empty) returns (CategoriesMenuResponse) {};
+  rpc CategoryBreadcrumb(CategoryRequest) returns (CategoriesMenuResponse) {};
+  rpc CategoriesSideMenu(CategoryRequest) returns (CategoriesMenuResponse) {};
+}
