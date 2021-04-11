@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	. "github.com/gugazimmermann/go-grpc-ecomm-go/ecommpb/ecommpb"
@@ -19,9 +23,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type server struct{}
@@ -54,6 +60,16 @@ type MongoProductsData struct {
 	Category    ObjectID               `bson:"category,omitempty"`
 	Cat         []MongoCategories      `bson:"cat,omitempty"`
 	LastUpdated *timestamppb.Timestamp `bson:"lastupdated,omitempty"`
+}
+
+type Body struct {
+	Sub               string `json:"sub,omitempty"`
+	EmailVerified     bool   `json:"email_verified,omitempty"`
+	Name              string `json:"name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	GivenName         string `json:"given_name,omitempty"`
+	FamilyName        string `json:"family_name,omitempty"`
+	Email             string `json:"email,omitempty"`
 }
 
 var products, categories *mongo.Collection
@@ -495,4 +511,44 @@ func (*server) SearchProducts(ctx context.Context, req *SearchProductsRequest) (
 	} else {
 		return &ProductsResponse{Total: 0, Data: data}, nil
 	}
+}
+
+func (*server) Checkout(ctx context.Context, req *CheckoutRequest) (*wrapperspb.BoolValue, error) {
+	log.Println("Checkout called")
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "Retrieving metadata is failed")
+	}
+	token := md["x-user-auth-token"]
+	res, err := keycloak(token[0])
+	if err != nil {
+		return wrapperspb.Bool(false), nil
+	}
+	if res.Status == "401 Unauthorized" {
+		log.Println("Checkout Unauthorized")
+		return wrapperspb.Bool(false), nil
+	}
+	defer res.Body.Close()
+	b := &Body{}
+	if err := json.NewDecoder(res.Body).Decode(&b); err != nil {
+		fmt.Println(err)
+		return nil, status.Errorf(codes.Internal, "Error decoding keycloak response body")
+	}
+	fmt.Println(b)
+	log.Printf("Checkout to: %v - %v\n", b.Name, b.Email)
+
+	log.Printf("Products: %v", req.Cart)
+	return wrapperspb.Bool(true), nil
+}
+
+func keycloak(token string) (*http.Response, error) {
+	kcu := os.Getenv("KEYCLOAK_URL")
+	fmt.Println(kcu)
+	data := url.Values{}
+	data.Set("access_token", token)
+	res, err := http.Post(kcu, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("Keycloak Error: %v", err))
+	}
+	return res, nil
 }

@@ -6,6 +6,7 @@ option go_package = "ecommpb/ecommpb";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
 
 message Category {
   string id = 1;
@@ -49,6 +50,15 @@ message ProductsResponse {
   repeated Product data = 2;
 }
 
+message CheckoutRequest {
+  message Cart {
+    Product product = 1;
+    int32 qty = 2;
+  }
+  repeated Cart cart = 1;
+}
+message CheckoutResponse {}
+
 service EcommService {
   rpc CategoriesMenu(google.protobuf.Empty) returns (CategoriesMenuResponse) {};
   rpc CategoryBreadcrumb(CategoryRequest) returns (CategoriesMenuResponse) {};
@@ -56,4 +66,5 @@ service EcommService {
   rpc Products(ProductRequest) returns (ProductsResponse) {};
   rpc ProductsFromCategory(ProductFromCategoryRequest) returns (ProductsResponse) {};
   rpc SearchProducts(SearchProductsRequest) returns (ProductsResponse) {};
+  rpc Checkout(CheckoutRequest) returns (google.protobuf.BoolValue) {};
 }
