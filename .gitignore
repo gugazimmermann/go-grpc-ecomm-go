@@ -1,3 +1,5 @@
 .env
 init-mongo.sh
 *.pb.go
+/certs/ca.*
+/certs/server.*

@@ -34,3 +34,54 @@ Now we will use Frontend and Backend together, so to make it easier we will use 
 `git submodule init`
 
 This will create the frontend folder, but it will remain another repository, so changes made to the frontend must be controlled from within this folder, such as git commit.
+
+## Certificates
+
+Our frontend will run inside a docker with certificates (self generated, so the browser will complain, but as it is only for testing and demonstration there is no problem). To do this, we first need to generate the certificates.
+
+Create `certs/certificate.conf`
+
+```conf
+[req]
+default_bits = 4096
+prompt = no
+default_md = sha256
+req_extensions = req_ext
+distinguished_name = dn
+[dn]
+C = US
+ST = NJ
+O = Test, Inc.
+CN = localhost
+[req_ext]
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+IP.1 = ::1
+IP.2 = 127.0.0.1
+
+```
+
+And `certs/gencerts.sh`
+
+```bash
+#!/bin/bash
+
+openssl genrsa -out ca.key 4096
+openssl req -new -x509 -key ca.key -sha256 -subj "/C=SE/ST=HL/O=Example, INC." -days 365 -out ca.cert
+openssl genrsa -out server.key 4096
+openssl req -new -key server.key -out server.csr -config certificate.conf
+openssl x509 -req -in server.csr -CA ca.cert -CAkey ca.key -CAcreateserial -out server.crt -days 365 -sha256 -extfile certificate.conf -extensions req_ext
+
+```
+
+In `.gitignore`
+s
+```
+/certs/ca.*
+/certs/server.*
+
+```
+
+Now move to `certs/`, make the sh a executable `chmod +x gencerts.sh` and run `./gencerts.sh`
+
