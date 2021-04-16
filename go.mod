@@ -4,6 +4,7 @@ go 1.15
 
 require (
 	github.com/aws/aws-sdk-go v1.38.21 // indirect
+	github.com/gosimple/slug v1.9.0
 	github.com/joho/godotenv v1.3.0
 	github.com/klauspost/compress v1.12.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
