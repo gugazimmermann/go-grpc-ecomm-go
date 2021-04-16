@@ -15,6 +15,12 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
+docker-compose -f docker/go/docker-compose.yml stop
+if [ $? -ne 0 ]; then
+  printf "${RED}Failed to stop go server container${NC}\n"
+  exit 1
+fi
+
 docker-compose -f docker/nginx/docker-compose.yml stop
 if [ $? -ne 0 ]; then
   printf "${RED}Failed to stop nginx container${NC}\n"
