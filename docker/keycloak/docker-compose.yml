@@ -1,0 +1,17 @@
+version: "3.5"
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: go-grpc-ecomm-keycloak
+    restart: unless-stopped
+    environment:
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: admin
+    ports:
+      - 8080:8080
+    networks:
+      - go-grpc-ecomm
+networks:
+  go-grpc-ecomm:
+    name: go_grpc_ecomm
+    driver: bridge

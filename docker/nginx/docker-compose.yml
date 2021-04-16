@@ -1,0 +1,19 @@
+version: "3.5"
+services:
+  nginx-react:
+    container_name: grpc-ecomm-react
+    restart: unless-stopped
+    build:
+      context: ../../
+      dockerfile: docker/nginx/Dockerfile
+    environment:
+      NODE_ENV: production
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - go-grpc-ecomm
+networks:
+  go-grpc-ecomm:
+    external:
+      name: go_grpc_ecomm

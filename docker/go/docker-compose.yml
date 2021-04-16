@@ -1,0 +1,16 @@
+version: "3.5"
+services:
+  go:
+    container_name: grpc-ecomm-go
+    restart: unless-stopped
+    build:
+      context: ../../
+      dockerfile: docker/go/Dockerfile
+    ports:
+      - 50051:50051
+    networks:
+      - go-grpc-ecomm
+networks:
+  go-grpc-ecomm:
+    external:
+      name: go_grpc_ecomm
