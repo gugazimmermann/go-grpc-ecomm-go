@@ -34,5 +34,3 @@ Now we will use Frontend and Backend together, so to make it easier we will use 
 `git submodule init`
 
 This will create the frontend folder, but it will remain another repository, so changes made to the frontend must be controlled from within this folder, such as git commit.
-
-To avoid mistakes, just add `/frontend` inside `.gitignore`
