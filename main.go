@@ -23,6 +23,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -103,8 +104,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
-	opts := []grpc.ServerOption{}
-	s := grpc.NewServer(opts...)
+	s, err := GenerateTLSApi("certs/server.crt", "certs/server.key")
+	if err != nil {
+		log.Fatalf("Failed to generate TLS api: %v", err)
+	}
 	RegisterEcommServiceServer(s, &server{})
 
 	go func() {
@@ -125,6 +128,15 @@ func main() {
 	fmt.Println("Closing MongoDB...")
 	client.Disconnect(mongoCtx)
 	fmt.Println("All done!")
+}
+
+func GenerateTLSApi(p, k string) (*grpc.Server, error) {
+	c, err := credentials.NewServerTLSFromFile(p, k)
+	if err != nil {
+		return nil, err
+	}
+	s := grpc.NewServer(grpc.Creds(c))
+	return s, nil
 }
 
 func (*server) CategoriesMenu(ctx context.Context, req *emptypb.Empty) (*CategoriesMenuResponse, error) {
